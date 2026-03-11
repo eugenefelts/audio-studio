@@ -6,25 +6,25 @@ import soundfile as sf
 import tempfile
 import os
 import io
+import warnings
+
+# Suppress harmless Python 3.12 regex warnings from pydub
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="pydub")
 
 # ==========================================
 # PAGE CONFIGURATION & MOBILE UI STYLING
 # ==========================================
 st.set_page_config(page_title="Audio Studio", page_icon="🎵", layout="centered")
 
-# Custom CSS to make the UI modern, sleek, and optimized for mobile
 st.markdown("""
 <style>
-    /* Maximize container width on mobile */
     .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
-    /* Style buttons to be more sleek */
     .stButton>button { 
         border-radius: 10px; 
         font-weight: 600; 
         transition: 0.2s;
     }
     .stButton>button:active { transform: scale(0.95); }
-    /* Hide the default Streamlit header/footer for an app-like feel */
     header {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
@@ -33,11 +33,6 @@ st.markdown("""
 st.title("🎵 Audio Studio")
 st.write("A mobile-friendly toolkit for your audio needs.")
 
-# ==========================================
-# SESSION STATE INITIALIZATION
-# ==========================================
-# We use this to hold the generated audio in memory so it isn't lost
-# when the app refreshes, and to track pitch semitones.
 if "dl_data" not in st.session_state:
     st.session_state.dl_data = None
 if "dl_name" not in st.session_state:
@@ -47,28 +42,22 @@ if "dl_mime" not in st.session_state:
 if "semitones" not in st.session_state:
     st.session_state.semitones = 0
 
-# Helper function to clear previous output when switching tools
 def clear_output():
     st.session_state.dl_data = None
 
-# ==========================================
-# HELPER DICTIONARIES
-# ==========================================
 MIME_TYPES = {
     "MP3": "audio/mpeg", "WAV": "audio/wav", "FLAC": "audio/flac",
     "M4A": "audio/mp4", "OGG": "audio/ogg", "AAC": "audio/aac"
 }
 
-# ==========================================
-# UI LAYOUT: TABS FOR DIFFERENT TOOLS
-# ==========================================
 tab1, tab2, tab3 = st.tabs(["⬇️ Downloader", "🔄 Converter", "🎚️ Pitch Shifter"])
 
 # ------------------------------------------
-# TOOL 1: YT-DLP DOWNLOADER
+# TOOL 1: YT-DLP DOWNLOADER (SUPERCHARGED)
 # ------------------------------------------
 with tab1:
     st.subheader("YouTube Downloader")
+    st.info("💡 Note: YouTube frequently blocks cloud servers. If it fails, try a different video.")
     yt_url = st.text_input("Paste YouTube URL here:", placeholder="https://youtube.com/...")
     yt_format = st.selectbox("Select Output Format", ["MP3", "WAV", "M4A", "FLAC"], on_change=clear_output, key="yt_fmt")
     
@@ -76,10 +65,10 @@ with tab1:
         if not yt_url:
             st.error("Please enter a valid URL.")
         else:
-            with st.spinner(f"Extracting high-quality {yt_format}..."):
+            with st.spinner(f"Bypassing checks & extracting {yt_format}..."):
                 try:
-                    # Use a temporary directory that auto-deletes when finished
                     with tempfile.TemporaryDirectory() as temp_dir:
+                        # SUPERCHARGED OPTIONS: Added Android Client spoofing & SSL bypass
                         ydl_opts = {
                             'format': 'bestaudio/best',
                             'postprocessors':[{
@@ -89,19 +78,26 @@ with tab1:
                             }],
                             'outtmpl': os.path.join(temp_dir, 'extracted_audio.%(ext)s'),
                             'quiet': True,
-                            'noplaylist': True
+                            'nocheckcertificate': True, # Bypasses SSL issues on Linux
+                            'ignoreerrors': False,
+                            'no_warnings': True,
+                            # This is the magic bullet for Streamlit 403 Forbidden errors:
+                            'extractor_args': {'youtube': {'player_client':['android', 'web']}} 
                         }
                         
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([yt_url])
+                        # Catch the exact yt-dlp internal error if it crashes
+                        try:
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([yt_url])
+                        except Exception as inner_e:
+                            st.error(f"YouTube Blocked the Request: {str(inner_e)}")
+                            st.stop()
                             
-                        # Find the output file
                         files = os.listdir(temp_dir)
                         if not files:
-                            st.error("Download failed.")
+                            st.error("Download failed: No file was generated. YouTube may have blocked this IP.")
                         else:
                             file_path = os.path.join(temp_dir, files[0])
-                            # Read file into server memory (bytes)
                             with open(file_path, "rb") as f:
                                 st.session_state.dl_data = f.read()
                             
@@ -111,7 +107,7 @@ with tab1:
                             st.success("Extraction complete!")
                             st.toast("✅ Ready to download!", icon="🎉")
                 except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+                    st.error(f"An unexpected error occurred: {str(e)}")
 
 # ------------------------------------------
 # TOOL 2: UNIVERSAL AUDIO CONVERTER
@@ -127,17 +123,13 @@ with tab2:
         else:
             with st.spinner(f"Converting to {conv_format}..."):
                 try:
-                    # Safely save uploaded file to temp path to prevent memory issues with Pydub
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp_in:
                         tmp_in.write(conv_file.getvalue())
                         tmp_in_path = tmp_in.name
                     
                     audio = AudioSegment.from_file(tmp_in_path)
-                    
-                    # Delete the temporary input file immediately to save server space!
                     os.remove(tmp_in_path) 
                     
-                    # Set format specifics for ffmpeg/pydub
                     fmt_kwargs = {}
                     if conv_format == "MP3": fmt_kwargs = {"format": "mp3", "bitrate": "192k"}
                     elif conv_format == "WAV": fmt_kwargs = {"format": "wav"}
@@ -146,7 +138,6 @@ with tab2:
                     elif conv_format == "AAC": fmt_kwargs = {"format": "adts", "codec": "aac"}
                     elif conv_format == "M4A": fmt_kwargs = {"format": "ipod", "codec": "aac"}
                     
-                    # Process entirely in memory (No disk saving)
                     buffer = io.BytesIO()
                     audio.export(buffer, **fmt_kwargs)
                     
@@ -168,14 +159,12 @@ with tab3:
     
     st.write("Adjust Pitch (Semitones):")
     
-    # Side-by-side buttons instead of a slider for precise mobile tapping
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         if st.button("⬇️ Down", use_container_width=True): 
             st.session_state.semitones -= 1
             clear_output()
     with col2:
-        # Display current shift value cleanly in the center
         st.markdown(f"<h3 style='text-align: center; margin-top: 0px;'>{st.session_state.semitones}</h3>", unsafe_allow_html=True)
     with col3:
         if st.button("⬆️ Up", use_container_width=True): 
@@ -188,22 +177,16 @@ with tab3:
         else:
             with st.spinner("Processing pitch shift (this may take a moment)..."):
                 try:
-                    # Write to temporary file to ensure safe loading by Librosa
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp_in:
                         tmp_in.write(pitch_file.getvalue())
                         tmp_in_path = tmp_in.name
                         
-                    # Load audio (sr=None preserves the original sample rate)
                     y, sr = librosa.load(tmp_in_path, sr=None)
-                    
-                    # Cleanup immediately
                     os.remove(tmp_in_path)
                     
-                    # Apply pitch shifting (preserves tempo)
                     if st.session_state.semitones != 0:
                         y = librosa.effects.pitch_shift(y, sr=sr, n_steps=st.session_state.semitones)
                     
-                    # Write modified audio to memory buffer (WAV format for highest quality)
                     buffer = io.BytesIO()
                     sf.write(buffer, y, sr, format='WAV')
                     
