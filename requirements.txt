@@ -1,5 +1,7 @@
 streamlit==1.32.0
-yt-dlp>=2025.0.0
+yt-dlp
 pydub==0.25.1
 librosa>=0.10.1
 soundfile==0.12.1
+mutagen
+curl-cffi
